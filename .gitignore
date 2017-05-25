@@ -1,0 +1,10 @@
+# python cache
+
+__pycache__/*
+
+# testing file
+
+
+# project file
+
+*.pyproj

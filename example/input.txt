@@ -1,0 +1,6 @@
+read_material elastic.txt
+read_data data.txt
+apply load
+apply bc
+assemble -p elastic -b reduce
+solve
