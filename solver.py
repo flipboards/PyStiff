@@ -9,7 +9,7 @@ import multiprocessing as mp
 
 import polygon2d
 from structure import Structure, Element
-from utils import str_mat, sym2float, xyz2array
+from utils import str_mat, sym2float, xyz2array, mpdot
 
 
 class Solver(object):
@@ -61,19 +61,21 @@ class Solver(object):
         self.load(structure)
 
         for element in structure.elements:
-            print('Begin evaluation...')
+            print('Physical analyze of one element...')
 
-            B = self.construct_dispmat(element.type, element.node_coord)
-            print('Displacement matrix:\n', str_mat(B, symbol=True))
+            N = self.construct_dispmat(element.type, element.node_coord)
+            print('Displacement matrix:\n', str_mat(N, symbol=True))
 
-            k = self.construct_stressmat(B, structure.material)
-            print('Stress matrix:\n', str_mat(k, symbol=True))
+            B, S = self.construct_stressmat(N, structure.material)
+            print('Stress matrix:\n', str_mat(S, symbol=True))
 
-            K = self.intergrate_2d(element.type, element.node_coord, k)
+            if structure.dimension == 2:
+                K = self.intergrate_2d(element.type, element.node_coord, B.T.dot(S) * structure.material.thickness)
+
             print('Stiffness matrix:\n', str_mat(K, True))
 
-            self.elem_disp_mats.append(B)
-            self.elem_stress_mats.append(k)
+            self.elem_disp_mats.append(N)
+            self.elem_stress_mats.append(S)
             self.elem_stiff_mats.append(K)
 
         self.assemble_mat(structure)
@@ -90,6 +92,7 @@ class Solver(object):
         """
         self.modify_bc()
         self.disp = np.linalg.solve(self.stiff_mat, self.force)
+
         print('Raw value for disp:\n%s' % str_mat(self.disp))
 
         self.restore_bc()
@@ -104,23 +107,6 @@ class Solver(object):
 
             self.elem_disp_mats_solved.append(self.elem_disp_mats[i].dot(self.disp[node_id_in_mat]))
             self.elem_stress_mats_solved.append(self.elem_stress_mats[i].dot(self.disp[node_id_in_mat]))
-
-    def eval_point(self, point):
-        """ Evaluate displacement matrix in arbitary position.
-        Args:
-            point: coord Array (x, y, ..)
-        Returns:
-            disp: general displacement Array (x, y, ..)
-            stress: general strain Array (Fx, Fy, .. )
-        """
-        element_id = self.locate_element(point)
-
-        if not self.elem_disp_mats_solved:
-            raise RuntimeError('Problem not solved')
-
-        disp = _eval_2d(self.elem_disp_mats_solved[element_id], point)
-        stress = _eval_2d(self.elem_stress_mats_solved[element_id], point)
-        return disp, stress
 
     def read_assmble_args(self, *args):
         """ Read assemble arguments as standard CLI args.
@@ -144,11 +130,16 @@ class Solver(object):
                     raise ValueError(arg)
 
     def eval(self, *args):
+
+        def print_eval_result(disp, stress):
+            print('Displacement matrix:\n%s' % str_mat(disp))
+            print('Stress matrix:\n%s' % str_mat(stress))
+
         opts, _args = getopt.getopt(args[1:], 'p:b:')
         for opt, arg in opts:
             if opt == '-p': # problem type
                 print('Point:', arg)
-                print('Disp=% .4e, Force=% .4e' % self.eval_point(xyz2array(arg)))
+                print_eval_result(*self.eval_point(xyz2array(arg)))
 
     def load(self, structure):
         """ Loading structure.
@@ -173,7 +164,7 @@ class Solver(object):
         for i in range(len(structure.bcs)):
             for j, bc in enumerate(structure.bcs[i]):
                 if bc is not None:
-                    self.bc.append((i + j, bc))
+                    self.bc.append((structure.dimension * i + j, bc))
 
         self.bc.sort(key=lambda x:x[0])
 
@@ -206,9 +197,8 @@ class Solver(object):
             raise RuntimeError('Invalid value for problem: %d' % self.problem)
 
         B = np.dot(_create_geomat_2d(), disp_mat.tolist())
-        S = D.dot(B) * material.thickness
-
-        return B.T.dot(S)
+        print('Creating stress matrix...')
+        return B, D.dot(B) 
 
     def intergrate_2d(self, elem_type, node_coord, f):
         """ Intergrate function f over an element.
@@ -292,8 +282,8 @@ class Solver(object):
 
         elif self.bc_type == Solver.BC_LARGENUM:
             for x in self.bc:
+                self.force[x[0]] = x[1] * self.stiff_mat[x[0], x[0]] *1e20
                 self.stiff_mat[x[0], x[0]] *= 1e20
-                self.force[x[0]] *= 1e20
 
         else:
             raise RuntimeError('Invalid value for bc type %d' % self.bc_type)
@@ -328,6 +318,22 @@ class Solver(object):
                 return i
         return None
 
+    def eval_point(self, point):
+        """ Evaluate displacement matrix in arbitary position.
+        Args:
+            point: coord Array (x, y, ..)
+        Returns:
+            disp: general displacement Array (x, y, ..)
+            stress: general strain Array (Fx, Fy, .. )
+        """
+        element_id = self.locate_element(point)
+
+        if not self.elem_disp_mats_solved:
+            raise RuntimeError('Problem not solved')
+
+        disp = _eval_2d(self.elem_disp_mats_solved[element_id], point)
+        stress = _eval_2d(self.elem_stress_mats_solved[element_id], point)
+        return disp, stress
 
     def _error_invalid_type(self, type):
         raise RuntimeError('Invalid element type %d' % type)
@@ -354,9 +360,9 @@ def _create_dispmat_tri2d(node_coord):
     
     N = sp.zeros(2, 6)
 
-    a = np.roll(node_coord[:,0], 1) * np.roll(node_coord[:,1], 2) - np.roll(node_coord[:,0], 2) * np.roll(node_coord[:,1], 1)
-    b = np.roll(node_coord[:,1], 1) - np.roll(node_coord[:,1], 2)
-    c = np.roll(node_coord[:,0], 2) - np.roll(node_coord[:,0], 1)
+    a = np.roll(node_coord[:,0], -1) * np.roll(node_coord[:,1], -2) - np.roll(node_coord[:,0], -2) * np.roll(node_coord[:,1], -1)
+    b = np.roll(node_coord[:,1], -1) - np.roll(node_coord[:,1], -2)
+    c = np.roll(node_coord[:,0], -2) - np.roll(node_coord[:,0], -1)
 
     for i in range(3):
         N[0, 2*i] = N[1, 2*i+1] = a[i] + b[i]*x + c[i]*y
@@ -402,7 +408,7 @@ def _eval_2d(disp_expr, coord):
     Returns:
         Float array (u, v)
     """
-    return np.array([i.evalf(subs={x:coord[0], y:coord[1]}) for i in disp_expr])
+    return np.array([sym2float(i.evalf(subs={x:coord[0], y:coord[1]})) for i in disp_expr])
 
 
 def _integate_2d(f, xrange, yrange):
