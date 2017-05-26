@@ -2,5 +2,6 @@ read_material elastic.txt
 read_data data.txt
 apply load
 apply bc
-assemble -p elastic -b reduce
+assemble -p elastic -b toones
 solve
+eval -p 40,20 -p 70,10 -p 10,60
