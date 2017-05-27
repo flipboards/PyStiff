@@ -6,7 +6,7 @@ A python interface of FEM simulation. It handles input file (commands) and data 
 
 Test the example file:
 
-    pystiff example/input.txt
+    python pystiff.py example/input.txt
 
 ### Input Commands
 
@@ -49,7 +49,7 @@ Optional blocks:
 
      Loads are added linearly on nodes.
 
-#### Material File
+### Material File
 
 Format is "name=value". First column should be the correct name shown below, and value must be a number.
 
